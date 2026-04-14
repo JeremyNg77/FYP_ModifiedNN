@@ -85,27 +85,10 @@ def bbox_iou(
     GIoU: bool = False,
     DIoU: bool = False,
     CIoU: bool = False,
+    shape_iou: bool = False,  # 1. ADDED FLAG HERE
     eps: float = 1e-7,
 ) -> torch.Tensor:
-    """Calculate the Intersection over Union (IoU) between bounding boxes.
-
-    This function supports various shapes for `box1` and `box2` as long as the last dimension is 4. For instance, you
-    may pass tensors shaped like (4,), (N, 4), (B, N, 4), or (B, N, 1, 4). Internally, the code will split the last
-    dimension into (x, y, w, h) if `xywh=True`, or (x1, y1, x2, y2) if `xywh=False`.
-
-    Args:
-        box1 (torch.Tensor): A tensor representing one or more bounding boxes, with the last dimension being 4.
-        box2 (torch.Tensor): A tensor representing one or more bounding boxes, with the last dimension being 4.
-        xywh (bool, optional): If True, input boxes are in (x, y, w, h) format. If False, input boxes are in (x1, y1,
-            x2, y2) format.
-        GIoU (bool, optional): If True, calculate Generalized IoU.
-        DIoU (bool, optional): If True, calculate Distance IoU.
-        CIoU (bool, optional): If True, calculate Complete IoU.
-        eps (float, optional): A small value to avoid division by zero.
-
-    Returns:
-        (torch.Tensor): IoU, GIoU, DIoU, or CIoU values depending on the specified flags.
-    """
+    """Calculate the Intersection over Union (IoU) between bounding boxes."""
     # Get the coordinates of bounding boxes
     if xywh:  # transform from xywh to xyxy
         (x1, y1, w1, h1), (x2, y2, w2, h2) = box1.chunk(4, -1), box2.chunk(4, -1)
@@ -128,20 +111,47 @@ def bbox_iou(
 
     # IoU
     iou = inter / union
-    if CIoU or DIoU or GIoU:
+    
+    # 2. ADDED shape_iou TO THIS CONDITION
+    if CIoU or DIoU or GIoU or shape_iou:
         cw = b1_x2.maximum(b2_x2) - b1_x1.minimum(b2_x1)  # convex (smallest enclosing box) width
         ch = b1_y2.maximum(b2_y2) - b1_y1.minimum(b2_y1)  # convex height
-        if CIoU or DIoU:  # Distance or Complete IoU https://arxiv.org/abs/1911.08287v1
+        
+        # 3. ADDED shape_iou TO THIS CONDITION
+        if CIoU or DIoU or shape_iou:  
             c2 = cw.pow(2) + ch.pow(2) + eps  # convex diagonal squared
             rho2 = (
                 (b2_x1 + b2_x2 - b1_x1 - b1_x2).pow(2) + (b2_y1 + b2_y2 - b1_y1 - b1_y2).pow(2)
             ) / 4  # center dist**2
+            
             if CIoU:  # https://github.com/Zzh-tju/DIoU-SSD-pytorch/blob/master/utils/box/box_utils.py#L47
                 v = (4 / math.pi**2) * ((w2 / h2).atan() - (w1 / h1).atan()).pow(2)
                 with torch.no_grad():
                     alpha = v / (v - iou + (1 + eps))
                 return iou - (rho2 / c2 + v * alpha)  # CIoU
+            
+            # 4. ADDED SHAPE-IOU LOGIC HERE
+            elif shape_iou: 
+                scale = 0.0  # Hyperparameter: controls scale weighting
+                theta = 2.0  # Hyperparameter: controls shape penalty focus
+                
+                # Scale weights
+                wt = w2.pow(scale) + h2.pow(scale) + eps
+                ww = (2 * w2.pow(scale)) / wt
+                hh = (2 * h2.pow(scale)) / wt
+                
+                # Shape penalties
+                omega_w = (w1 - w2).abs() / torch.max(w1, w2)
+                omega_h = (h1 - h2).abs() / torch.max(h1, h2)
+                
+                # Final cost components
+                distance_cost = (rho2 / c2) * (ww + hh)
+                shape_cost = (1 - torch.exp(-omega_w)) ** theta * ww + (1 - torch.exp(-omega_h)) ** theta * hh
+                
+                return iou - distance_cost - 1.0 * shape_cost  # Shape-IoU
+                
             return iou - rho2 / c2  # DIoU
+            
         c_area = cw * ch + eps  # convex area
         return iou - (c_area - union) / c_area  # GIoU https://arxiv.org/pdf/1902.09630.pdf
     return iou  # IoU
