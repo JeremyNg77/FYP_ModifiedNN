@@ -1,0 +1,12 @@
+# Ignore virtual environments
+.venv/
+
+# Ignore datasets
+datasets/
+
+# Ignore training runs and weights
+runs/
+*.pt
+
+# Ignore python cache
+__pycache__/
